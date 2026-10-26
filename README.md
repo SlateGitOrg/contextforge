@@ -23,7 +23,7 @@ confidence is too low it says so and logs the question to an admin queue instead
   retrieved (hallucination guard).
 - Unanswered questions go to an admin review queue at `/admin`.
 - Embeddable widget (one `<script>` tag), chat demo page and `/ingest` page.
-- Runs with no API keys, no network and no database; opt in to OpenAI embeddings, Claude answers
+- Runs with no API keys, no network and no database; opt in to OpenAI embeddings, Anthropic-generated answers
   and Postgres + pgvector through environment variables.
 - Offline eval harness with a 30-case golden dataset that reports accuracy and hallucination rate.
 
@@ -58,7 +58,7 @@ Each stage has a swappable provider chosen from the environment:
 | Concern | Default (offline) | Opt-in |
 | --- | --- | --- |
 | Embeddings | TF-IDF over feature hashing, deterministic (`lib/embeddings.ts`) | OpenAI `text-embedding-3-small` when `OPENAI_API_KEY` is set |
-| Answers | Extractive: only sentences lifted verbatim from retrieved chunks (`lib/answer-providers.ts`) | Claude via the Vercel AI SDK when `ANTHROPIC_API_KEY` is set |
+| Answers | Extractive: only sentences lifted verbatim from retrieved chunks (`lib/answer-providers.ts`) | An Anthropic model via the Vercel AI SDK when `ANTHROPIC_API_KEY` is set |
 | Vector store | In-memory | Postgres + pgvector via Drizzle (`lib/db/pg-vector-store.ts`) when `DATABASE_URL` is set |
 
 ## Quick start
