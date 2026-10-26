@@ -1,135 +1,170 @@
-# ContextForge
+# contextforge
 
-**A self-hostable docs answer bot that cites its sources and admits when it doesn't know.**
+A self-hostable docs answer bot that cites its sources and abstains when it isn't sure.
 
-![ContextForge](assets/hero.png)
+[![CI](https://github.com/SlateGitOrg/contextforge/actions/workflows/ci.yml/badge.svg)](https://github.com/SlateGitOrg/contextforge/actions/workflows/ci.yml)
 
-## The problem
+## Why
 
-Small teams can't afford Glean or Intercom Fin, but they still drown in the same handful of
-questions their docs already answer — "how do I rotate an API key," "what's the refund policy,"
-"why did my webhook stop firing." Hiring more support headcount doesn't scale, and a generic
-chatbot that confidently makes things up is worse than no bot at all: it erodes trust and creates
-support tickets of its own.
+Small teams field the same handful of questions their docs already answer: how to rotate an API
+key, what the refund policy is, why a webhook stopped firing. Hosted answer bots are expensive,
+and a generic chatbot that confidently invents an answer is worse than none, because it erodes
+trust and creates tickets of its own.
 
-ContextForge is a small, self-hostable RAG (retrieval-augmented generation) service you can point
-at your own docs — markdown, PDFs, or a URL — that answers questions **grounded in and citing
-those docs**, and explicitly **abstains** ("I don't know, but I've logged this for the team") when
-its retrieval confidence is too low to trust an answer. It ships as an embeddable widget (one
-`<script>` tag), a chat demo page, and an admin queue of unanswered questions that turns every
-"I don't know" into a prioritized backlog for improving the docs.
+contextforge is a small RAG (retrieval-augmented generation) service you point at your own docs
+(Markdown, PDF or a URL). It answers only from those docs, cites them, and when retrieval
+confidence is too low it says so and logs the question to an admin queue instead of guessing.
 
-## How it works
+## Features
+
+- Ingest Markdown, PDF and web pages into section-aware, overlapping chunks.
+- Answers carry numbered citations with the source document and a snippet.
+- Abstains below a confidence threshold, and also when an answer cites a marker that was never
+  retrieved (hallucination guard).
+- Unanswered questions go to an admin review queue at `/admin`.
+- Embeddable widget (one `<script>` tag), chat demo page and `/ingest` page.
+- Runs with no API keys, no network and no database; opt in to OpenAI embeddings, Claude answers
+  and Postgres + pgvector through environment variables.
+- Offline eval harness with a 30-case golden dataset that reports accuracy and hallucination rate.
+
+## Architecture
 
 ```mermaid
 flowchart LR
     subgraph Ingestion
-        A[Markdown / PDF / URL] --> B[Normalize to plain text]
-        B --> C[Chunk by section<br/>+ overlap on long sections]
-        C --> D[Embed each chunk]
-        D --> E[(Vector store<br/>Postgres+pgvector or in-memory)]
+        A["Markdown / PDF / URL"] --> B["Normalize to plain text"]
+        B --> C["Chunk by section<br/>overlap on long sections"]
+        C --> D["Embed each chunk"]
+        D --> E[("Vector store<br/>pgvector or in-memory")]
     end
 
-    subgraph "Ask a question"
-        F[User question] --> G[Embed query]
-        G --> H[Top-k similarity search]
+    subgraph Ask
+        F["User question"] --> G["Embed query"]
+        G --> H["Top-k similarity search"]
         H --> E
-        H --> I{Top score ≥<br/>confidence threshold?}
-        I -- No --> J[Abstain<br/>+ log to review queue]
-        I -- Yes --> K[Generate answer<br/>grounded in retrieved chunks]
-        K --> L{Every citation<br/>marker retrieved?}
-        L -- No, hallucinated --> J
-        L -- Yes --> M[Streamed answer<br/>with numbered citations]
+        H --> I{"Top score at or above<br/>confidence threshold?"}
+        I -- No --> J["Abstain and log"]
+        I -- Yes --> K["Generate answer from<br/>retrieved chunks"]
+        K --> L{"Every citation marker<br/>was retrieved?"}
+        L -- No --> J
+        L -- Yes --> M["Streamed answer<br/>with citations"]
     end
 
-    J --> N[Admin: unanswered<br/>questions queue]
+    J --> N["Admin: unanswered<br/>questions queue"]
 ```
 
-Two swappable pairs of providers back this, selected automatically from environment
-configuration:
+Each stage has a swappable provider chosen from the environment:
 
-- **Embeddings**: a free, offline, deterministic TF-IDF-over-feature-hashing embedder by default
-  (`lib/embeddings.ts`); switches to OpenAI's `text-embedding-3-small` when `OPENAI_API_KEY` is set.
-- **Answer generation**: a free, hallucination-proof *extractive* answerer by default (it only ever
-  emits sentences lifted verbatim from retrieved chunks — `lib/answer-providers.ts`); switches to
-  Claude (via the Vercel AI SDK) when `ANTHROPIC_API_KEY` is set, for more fluent prose.
-- **Vector store**: an in-memory store for local dev/demo/CI; Postgres + pgvector
-  (`lib/db/pg-vector-store.ts`, via Drizzle ORM) when `DATABASE_URL` is set.
-
-This means the app runs — and its whole test suite passes — with **zero API keys, zero network
-access, and zero running database**, which is also exactly what makes it cheap to self-host for a
-team that doesn't want a $50k/year vendor contract.
+| Concern | Default (offline) | Opt-in |
+| --- | --- | --- |
+| Embeddings | TF-IDF over feature hashing, deterministic (`lib/embeddings.ts`) | OpenAI `text-embedding-3-small` when `OPENAI_API_KEY` is set |
+| Answers | Extractive: only sentences lifted verbatim from retrieved chunks (`lib/answer-providers.ts`) | Claude via the Vercel AI SDK when `ANTHROPIC_API_KEY` is set |
+| Vector store | In-memory | Postgres + pgvector via Drizzle (`lib/db/pg-vector-store.ts`) when `DATABASE_URL` is set |
 
 ## Quick start
 
+Prerequisites: Node.js 22 and npm.
+
 ```bash
-npm install
-npm run dev
-# → http://localhost:3000
+npm ci
+npm run dev        # http://localhost:3000
 ```
 
-The dev server seeds itself with a bundled fictional support KB ("Nimbus Notes" — billing, API
-keys, rate limits, 2FA, webhooks, exports, and more) the first time it's queried, so the chat demo
-on `/` works immediately with no setup. Try `/ingest` to add your own markdown/PDF/URL, and
-`/admin` to see the review queue fill up when you ask something out of scope.
+The dev server seeds a bundled fictional support KB ("Nimbus Notes": billing, API keys, rate
+limits, 2FA, webhooks, exports) on the first query, so the chat page works immediately. Use
+`/ingest` to add your own content and `/admin` to see abstained questions.
 
-To embed the widget on any page:
+Production build and tests:
+
+```bash
+npm run build && npm start
+npm run lint
+npm test           # vitest, fully offline
+npm run eval       # golden dataset through the real pipeline
+```
+
+Embed the widget on any page:
 
 ```html
 <script src="https://your-domain/widget.js" data-endpoint="https://your-domain"></script>
 ```
 
-### Running against a real LLM + Postgres
+### Real LLM and Postgres
 
 ```bash
-cp .env.example .env   # if you add one; otherwise export these directly
 export DATABASE_URL="postgres://user:pass@host:5432/contextforge"
-export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY for embeddings
+export ANTHROPIC_API_KEY="sk-ant-..."   # and/or OPENAI_API_KEY for embeddings
 npm run db:generate && npm run db:migrate
 npm run dev
 ```
 
-### Tests and the eval harness
+## Usage
+
+`POST /api/chat` takes `{"question": "..."}` and streams the answer text, then a
+`<<<CONTEXTFORGE_META>>>` delimiter and a JSON footer with status, confidence and citations.
 
 ```bash
-npm test        # vitest — fully offline, mocked/in-memory throughout
-npm run eval    # runs eval/dataset.json (26 golden Q&A pairs) through the real pipeline
-                # and prints accuracy / hallucination-rate / abstain-behavior metrics
+curl -s -X POST localhost:3000/api/chat -H 'content-type: application/json' \
+  -d '{"question":"How much does the Team plan cost per member per month?"}'
 ```
 
-The eval harness (`eval/harness.ts`) is also exercised inside the test suite
-(`eval/__tests__/golden-dataset.test.ts`), asserting a **0% hallucination rate** and a minimum
-accuracy bar on the free offline pipeline, so a retrieval or abstain-threshold regression fails CI
-before it ships.
+```text
+The Team plan costs $12 per member per month, billed monthly or annually, and raises the
+attachment limit to 250 MB. [1] ...
 
-## Project structure
+<<<CONTEXTFORGE_META>>>
 
-```
-app/                  Next.js App Router: landing/chat demo, /ingest, /admin, API routes
-components/            Chat UI (source-highlighted citations) and shared UI primitives
-lib/                    Core RAG pipeline: chunking, embeddings, retrieval, citations, abstain logic
-lib/ingest/             Markdown / PDF / URL → normalized SourceDocument
-lib/db/                 Drizzle schema + Postgres/pgvector-backed VectorStore
-widget/                 Vanilla-JS embeddable chat widget, bundled with esbuild → public/widget.js
-eval/                   Golden Q&A dataset + eval harness (accuracy / hallucination-rate reporting)
-fixtures/docs/          Bundled demo knowledge base ("Nimbus Notes")
+{"status":"answered","confidence":0.52,"citations":[{"documentId":"billing-and-plans","marker":1,...}]}
 ```
 
-## Design notes / limitations
+An out-of-scope question returns `"status":"abstained"` with no citations and is added to the
+admin queue.
 
-- The default embedder is lexical (TF-IDF + hashing), not a neural embedding model — it's real and
-  measurably better than keyword search, but won't catch pure paraphrase with zero shared
-  vocabulary the way a neural embedding would. Configure `OPENAI_API_KEY` for that.
-- Streaming is "stream the already-computed answer" rather than token-by-token LLM streaming when
-  running the free extractive provider (which isn't autoregressive); the Anthropic provider path
-  is a drop-in swap and the streaming framing (`lib/chat-stream.ts`) doesn't change either way.
-- PDF and URL ingestion aren't covered by the default offline `npm test` where they'd require
-  real files/network beyond what's practical to fixture; `lib/ingest/url.ts`'s HTML-extraction
-  logic *is* unit tested against a fixture HTML string, and the PDF/URL network calls are thin,
-  isolated wrappers.
-- `lib/db/__tests__/pg-vector-store.integration.test.ts` covers the Postgres-backed store but is
-  skipped by default (no Docker/DB in CI); run it locally with a real `DATABASE_URL` and
-  `RUN_DB_INTEGRATION=1 npm test`.
+## How it works
+
+- **Chunking** splits by section heading and adds overlap only on long sections, so a chunk
+  usually corresponds to one self-contained topic.
+- **Retrieval** embeds the question, takes the top-k chunks by cosine similarity and uses the top
+  score as the confidence signal. The threshold is `DEFAULT_CONFIDENCE_THRESHOLD = 0.215` in
+  `lib/retrieval.ts`.
+- **Grounding check** parses the citation markers in a generated answer and abstains if any marker
+  points at a chunk that was not retrieved.
+- **Streaming**: the answer is framed as a text stream followed by a JSON footer
+  (`lib/chat-stream.ts`), since status and citations are only known once generation finishes.
+
+Eval results on the offline pipeline (`npm run eval`, 30 cases from `eval/dataset.json`): accuracy
+80.0%, hallucination rate 0.0%, 0 false answers, 3 incorrect abstains and 3 answers missing an
+expected keyword. The threshold is tuned conservatively: it prefers abstaining to answering wrongly.
+
+## Testing
+
+`npm test` runs 99 vitest tests offline (one Postgres integration test is skipped by default).
+They cover chunking, embeddings, retrieval, citation validation, abstain logic, ingestion and the
+eval harness, which asserts a 0% hallucination rate and at least 80% accuracy so a retrieval or
+threshold regression fails CI. To run the Postgres test: set a real `DATABASE_URL` and run
+`RUN_DB_INTEGRATION=1 npm test`.
+
+## Project layout
+
+```
+app/          Next.js App Router: chat demo, /ingest, /admin, API routes
+components/   Chat UI with source-highlighted citations
+lib/          RAG pipeline: chunking, embeddings, retrieval, citations, abstain logic
+lib/ingest/   Markdown / PDF / URL to normalized documents
+lib/db/       Drizzle schema and pgvector-backed store
+widget/       Vanilla-JS embeddable widget, bundled with esbuild to public/widget.js
+eval/         Golden Q&A dataset and eval harness
+fixtures/     Bundled demo knowledge base
+```
+
+## Limitations
+
+- The default embedder is lexical, not neural. It beats keyword search but misses paraphrases with
+  no shared vocabulary; set `OPENAI_API_KEY` for that.
+- With the extractive provider the answer is streamed after it is computed, not token by token.
+- PDF and URL network fetches are thin wrappers and are not covered by the offline tests; the HTML
+  extraction logic is tested against a fixture.
+- The unanswered-questions queue is in-memory and resets on restart; the vector store is persistent only with Postgres.
 
 ## License
 
